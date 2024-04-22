@@ -31,6 +31,10 @@ class RoutesTest extends TestCase
         $app->booted(function () {
             Route::statamic('/basic-route-with-data', 'test', ['hello' => 'world']);
 
+            Route::statamic('/basic-route-with-data-from-closure', 'test', function () {
+                return ['hello' => 'world'];
+            });
+
             Route::statamic('/basic-route-without-data', 'test');
 
             Route::statamic('/route/with/placeholders/{foo}/{bar}/{baz}', 'test');
@@ -105,6 +109,17 @@ class RoutesTest extends TestCase
     }
 
     /** @test */
+    public function it_renders_a_view_with_data_from_a_closure()
+    {
+        $this->viewShouldReturnRaw('layout', '{{ template_content }}');
+        $this->viewShouldReturnRaw('test', 'Hello {{ hello }}');
+
+        $this->get('/basic-route-with-data-from-closure')
+            ->assertOk()
+            ->assertSee('Hello world');
+    }
+
+    /** @test */
     public function it_renders_a_view_without_data()
     {
         $this->viewShouldReturnRaw('layout', '{{ template_content }}');
@@ -155,7 +170,7 @@ class RoutesTest extends TestCase
             ->assertDontSee('The layout');
     }
 
-    public function undefinedLayoutRouteProvider()
+    public static function undefinedLayoutRouteProvider()
     {
         return [
             'null' => ['route-with-null-layout'],

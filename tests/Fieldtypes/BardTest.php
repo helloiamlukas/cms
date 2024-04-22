@@ -900,7 +900,7 @@ EOT;
         $this->assertEquals($expected, $this->bard(['inline' => $config, 'sets' => null])->augment($data));
     }
 
-    public function inlineProvider()
+    public static function inlineProvider()
     {
         return [
             'true' => [true],
@@ -1211,12 +1211,88 @@ EOT;
         $this->assertEquals('test.-1.words', $value['defaults']['one']['words']);
     }
 
+    /** @test */
+    public function it_filters_away_bad_nodes()
+    {
+        $data = [
+            [],
+            ['type' => 'text', 'text' => 'This is inline text.'],
+            ['text' => 'I have no type'],
+        ];
+
+        $expected = '[{"type":"paragraph","content":[{"type":"text","text":"This is inline text."}]}]';
+
+        $this->assertEquals($expected, $this->bard(['input_mode' => 'block', 'sets' => null])->preProcess($data));
+    }
+
+    /** @test */
+    public function it_calls_hooks()
+    {
+        Bard::hook('augment', function ($payload, $next) {
+            return $next(array_reverse($payload));
+        });
+        Bard::hook('process', function ($payload, $next) {
+            return $next(array_reverse($payload));
+        });
+        Bard::hook('pre-process', function ($payload, $next) {
+            return $next(array_reverse($payload));
+        });
+        Bard::hook('pre-process-index', function ($payload, $next) {
+            return $next(array_reverse($payload));
+        });
+        Bard::hook('pre-process-validatable', function ($payload, $next) {
+            return $next(array_reverse($payload));
+        });
+        Bard::hook('preload', function ($payload, $next) {
+            return $next(array_merge($payload, [
+                'customData' => 'some custom data',
+            ]));
+        });
+        Bard::hook('extra-rules', function ($payload, $next) {
+            return $next(array_merge($payload, [
+                'custom_field' => ['required'],
+            ]));
+        });
+        Bard::hook('extra-validation-attributes', function ($payload, $next) {
+            return $next(array_merge($payload, [
+                'custom_field' => 'Custom Field',
+            ]));
+        });
+
+        $bard = $this->bard(['sets' => null]);
+
+        $data = [
+            [
+                'type' => 'paragraph',
+                'content' => [
+                    ['type' => 'text', 'text' => 'First'],
+                ],
+            ],
+            [
+                'type' => 'paragraph',
+                'content' => [
+                    ['type' => 'text', 'text' => 'Second'],
+                ],
+            ],
+        ];
+        $expectedData = array_reverse($data);
+        $expectedHtml = '<p>Second</p><p>First</p>';
+
+        $this->assertEquals($expectedHtml, $bard->augment($data));
+        $this->assertEquals($expectedData, $bard->process(json_encode($data)));
+        $this->assertEquals(json_encode($expectedData), $bard->preProcess($data));
+        $this->assertEquals($expectedHtml, $bard->preProcessIndex($data));
+        $this->assertArrayHasKey('customData', $bard->preload(json_encode($data)));
+        $this->assertArrayHasKey('custom_field', $bard->extraRules(json_encode($data)));
+        $this->assertArrayHasKey('custom_field', $bard->extraValidationAttributes(json_encode($data)));
+    }
+
     private function bard($config = [])
     {
         return (new Bard)->setField(new Field('test', array_merge(['type' => 'bard', 'sets' => ['one' => []]], $config)));
     }
 
-    public function groupedSetsProvider()
+    public static function groupedSetsProvider()
     {
         return [
             'grouped sets (new)' => [true],

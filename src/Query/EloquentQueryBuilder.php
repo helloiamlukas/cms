@@ -429,7 +429,7 @@ abstract class EloquentQueryBuilder implements Builder
     protected function invalidOperatorAndValue($operator, $value)
     {
         return is_null($value) && in_array($operator, array_keys($this->operators)) &&
-             ! in_array($operator, ['=', '<>', '!=']);
+            ! in_array($operator, ['=', '<>', '!=']);
     }
 
     /**
@@ -470,6 +470,90 @@ abstract class EloquentQueryBuilder implements Builder
     }
 
     /**
+     * Chunk the results of a query by comparing IDs.
+     *
+     * @param  int  $count
+     * @param  string|null  $column
+     * @param  string|null  $alias
+     * @return bool
+     */
+    public function chunkById($count, callable $callback, $column = null, $alias = null)
+    {
+        return $this->orderedChunkById($count, $callback, $column, $alias);
+    }
+
+    /**
+     * Chunk the results of a query by comparing IDs in descending order.
+     *
+     * @param  int  $count
+     * @param  string|null  $column
+     * @param  string|null  $alias
+     * @return bool
+     */
+    public function chunkByIdDesc($count, callable $callback, $column = null, $alias = null)
+    {
+        return $this->orderedChunkById($count, $callback, $column, $alias, descending: true);
+    }
+
+    /**
+     * Chunk the results of a query by comparing IDs in a given order.
+     *
+     * @param  int  $count
+     * @param  string|null  $column
+     * @param  string|null  $alias
+     * @param  bool  $descending
+     * @return bool
+     */
+    public function orderedChunkById($count, callable $callback, $column = null, $alias = null, $descending = false)
+    {
+        $column ??= $this->builder->defaultKeyName();
+
+        $alias ??= $column;
+
+        $lastId = null;
+
+        $page = 1;
+
+        do {
+            $clone = clone $this;
+
+            // We'll execute the query for the given page and get the results. If there are
+            // no results we can just break and return from here. When there are results
+            // we will call the callback with the current chunk of these results here.
+            if ($descending) {
+                $results = $clone->forPageBeforeId($count, $lastId, $column)->get();
+            } else {
+                $results = $clone->forPageAfterId($count, $lastId, $column)->get();
+            }
+
+            $countResults = $results->count();
+
+            if ($countResults == 0) {
+                break;
+            }
+
+            // On each chunk result set, we will pass them to the callback and then let the
+            // developer take care of everything within the callback, which allows us to
+            // keep the memory low for spinning through large result sets for working.
+            if ($callback($results, $page) === false) {
+                return false;
+            }
+
+            $lastId = data_get($results->last(), $alias);
+
+            if ($lastId === null) {
+                throw new RuntimeException("The chunkById operation was aborted because the [{$alias}] column is not present in the query result.");
+            }
+
+            unset($results);
+
+            $page++;
+        } while ($countResults == $count);
+
+        return true;
+    }
+
+    /**
      * Query lazily, by chunks of the given size.
      *
      * @param  int  $chunkSize
@@ -498,5 +582,129 @@ abstract class EloquentQueryBuilder implements Builder
                 }
             }
         });
+    }
+
+    /**
+     * Query lazily, by chunking the results of a query by comparing IDs.
+     *
+     * @param  int  $chunkSize
+     * @param  string|null  $column
+     * @param  string|null  $alias
+     * @return \Illuminate\Support\LazyCollection
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function lazyById($chunkSize = 1000, $column = null, $alias = null)
+    {
+        return $this->orderedLazyById($chunkSize, $column, $alias);
+    }
+
+    /**
+     * Query lazily, by chunking the results of a query by comparing IDs in descending order.
+     *
+     * @param  int  $chunkSize
+     * @param  string|null  $column
+     * @param  string|null  $alias
+     * @return \Illuminate\Support\LazyCollection
+     *
+     * @throws \InvalidArgumentException
+     */
+    public function lazyByIdDesc($chunkSize = 1000, $column = null, $alias = null)
+    {
+        return $this->orderedLazyById($chunkSize, $column, $alias, true);
+    }
+
+    /**
+     * Query lazily, by chunking the results of a query by comparing IDs in a given order.
+     *
+     * @param  int  $chunkSize
+     * @param  string|null  $column
+     * @param  string|null  $alias
+     * @param  bool  $descending
+     * @return \Illuminate\Support\LazyCollection
+     *
+     * @throws \InvalidArgumentException
+     */
+    protected function orderedLazyById($chunkSize = 1000, $column = null, $alias = null, $descending = false)
+    {
+        if ($chunkSize < 1) {
+            throw new InvalidArgumentException('The chunk size should be at least 1');
+        }
+
+        $column ??= $this->builder->defaultKeyName();
+
+        $alias ??= $column;
+
+        return LazyCollection::make(function () use ($chunkSize, $column, $alias, $descending) {
+            $lastId = null;
+
+            while (true) {
+                $clone = clone $this;
+
+                if ($descending) {
+                    $results = $clone->forPageBeforeId($chunkSize, $lastId, $column)->get();
+                } else {
+                    $results = $clone->forPageAfterId($chunkSize, $lastId, $column)->get();
+                }
+
+                foreach ($results as $result) {
+                    yield $result;
+                }
+
+                if ($results->count() < $chunkSize) {
+                    return;
+                }
+
+                $lastId = $results->last()->{$alias};
+
+                if ($lastId === null) {
+                    throw new RuntimeException("The lazyById operation was aborted because the [{$alias}] column is not present in the query result.");
+                }
+            }
+        });
+    }
+
+    /**
+     * Constrain the query to the previous "page" of results before a given ID.
+     *
+     * @param  int  $perPage
+     * @param  int|null  $lastId
+     * @param  string  $column
+     * @return $this
+     */
+    public function forPageBeforeId($perPage = 15, $lastId = 0, $column = 'id')
+    {
+        $this->builder->orders = $this->builder->removeExistingOrdersFor($column);
+
+        if (! is_null($lastId)) {
+            $this->builder->where($column, '<', $lastId);
+        }
+
+        $this->builder->orderBy($column, 'desc')
+            ->limit($perPage);
+
+        return $this;
+    }
+
+    /**
+     * Constrain the query to the next "page" of results after a given ID.
+     *
+     * @param  int  $perPage
+     * @param  int|null  $lastId
+     * @param  string  $column
+     * @return $this
+     */
+    public function forPageAfterId($perPage = 15, $lastId = 0, $column = 'id')
+    {
+        $this->builder->orders = $this->builder->removeExistingOrdersFor($column);
+
+        if (! is_null($lastId)) {
+            $this->builder->where($column, '>', $lastId);
+        }
+
+        $this->builder->orderBy($column, 'asc')
+            ->limit($perPage);
+
+        return $this;
     }
 }
